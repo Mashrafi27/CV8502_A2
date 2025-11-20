@@ -70,6 +70,22 @@ python main.py explain \
   --outdir outputs/explain_baseline
 
 # 8) Repeat explainability after mitigation for comparison/case studies
+
+# 9) Calibration (optional but recommended)
+python main.py calibrate \
+  --csv /path/to/your.csv --img-root /path/to/images_root \
+  --labels Effusion \
+  --val-split val --test-split test \
+  --weights outputs/baseline/best.pt \
+  --outdir outputs/calibration_baseline
+
+# 10) Mild perturbation stability (optional)
+python scripts/perturb_eval.py \
+  --csv /path/to/your.csv --img-root /path/to/images_root \
+  --labels Effusion \
+  --weights outputs/baseline/best.pt \
+  --split test \
+  --outdir outputs/perturb_baseline
 ```
 
 ## Outputs
@@ -77,6 +93,8 @@ python main.py explain \
 - `group_metrics_<split>.json`: per-group macro metrics (AUROC/AUPRC/F1/Sens@95%Spec).
 - `fairness_summary.json` + `per_group_metrics.csv`: DP/EO/EOds gaps and subgroup metrics.
 - `exp_<split>_####.png` + `explain_summary.csv`: Grad-CAM and IG overlays.
+- `calibration_*/reliability_*.png` and metrics from `main.py calibrate`.
+- `perturb_*/clean_metrics.json` and `perturbed_metrics.json` from mild perturbation check.
 
 ## Mitigation flags
 - `--reweight-by-group`: inverse-frequency group sampler.
