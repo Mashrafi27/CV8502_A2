@@ -129,7 +129,7 @@ def get_transforms(image_size: int = 224, split: str = "train"):
         return A.Compose([
             A.LongestMaxSize(max_size=image_size),
             A.PadIfNeeded(image_size, image_size, border_mode=cv2.BORDER_CONSTANT),
-            A.RandomResizedCrop(image_size, image_size, scale=(0.8, 1.0), ratio=(0.9, 1.1), p=0.8),
+            A.RandomResizedCrop(size=(image_size, image_size), scale=(0.8, 1.0), ratio=(0.9, 1.1), p=0.8),
             A.HorizontalFlip(p=0.5),
             A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.3),
             A.GaussianBlur(blur_limit=(3,5), p=0.2),
