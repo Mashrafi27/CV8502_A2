@@ -656,30 +656,28 @@ def _overlay_heatmap(img: np.ndarray, heatmap: np.ndarray, alpha: float = 0.5) -
     heat_color = cv2.cvtColor(heat_color, cv2.COLOR_BGR2RGB)
     return np.clip(alpha * img + (1 - alpha) * heat_color, 0, 255).astype(np.uint8)
 
-def _grad_cam(model: nn.Module, images: torch.Tensor, target_idx: int, target_layer: nn.Module) -> np.ndarray:
-    activations = []
-    gradients = []
-    def fwd_hook(_m, _i, o): activations.append(o)
-    def bwd_hook(_m, _gi, go): gradients.append(go[0])
-    h1 = target_layer.register_forward_hook(fwd_hook)
-    h2 = target_layer.register_full_backward_hook(bwd_hook)
+def _grad_cam(model: nn.Module, images: torch.Tensor, target_idx: int) -> np.ndarray:
+    """
+    Manual Grad-CAM to avoid hook + in-place ReLU issues in DenseNet.
+    """
+    features = model.features(images)
+    features.retain_grad()
+    activated = F.relu(features, inplace=False)
+    pooled = F.adaptive_avg_pool2d(activated, (1, 1)).view(features.size(0), -1)
+    logits = model.classifier(pooled)
 
-    logits = model(images)
     target = logits[:, target_idx].sum()
     model.zero_grad()
     target.backward(retain_graph=True)
 
-    acts = activations[-1]          # [B, C, H, W]
-    grads = gradients[-1]           # [B, C, H, W]
-    weights = grads.mean(dim=(2,3), keepdim=True)
-    cam = F.relu((weights * acts).sum(dim=1, keepdim=True))  # [B,1,H,W]
+    grads = features.grad
+    weights = grads.mean(dim=(2, 3), keepdim=True)
+    cam = F.relu((weights * features).sum(dim=1, keepdim=True))
     cam = F.interpolate(cam, size=images.shape[2:], mode="bilinear", align_corners=False)
     cam = cam.squeeze(1)
     cam_min = cam.view(cam.size(0), -1).min(dim=1)[0].view(-1, 1, 1)
     cam_max = cam.view(cam.size(0), -1).max(dim=1)[0].view(-1, 1, 1) + 1e-6
     cam = (cam - cam_min) / cam_max
-
-    h1.remove(); h2.remove()
     return cam.detach().cpu().numpy()
 
 def explain(args):
@@ -696,8 +694,6 @@ def explain(args):
     model = build_model(num_classes=len(args.labels), drop_rate=args.drop_rate, pretrained=False).to(device)
     model.load_state_dict(torch.load(args.weights, map_location=device))
     model.eval()
-    target_layer = model.features
-
     ig = None
     if _HAS_CAPTUM:
         ig = IntegratedGradients(model)
@@ -710,7 +706,7 @@ def explain(args):
         images = batch["image"].to(device)
         logits = model(images)
         probs = torch.sigmoid(logits)
-        cams = _grad_cam(model, images, target_idx, target_layer)
+        cams = _grad_cam(model, images, target_idx)
         ig_maps = None
         if ig is not None:
             attributions = ig.attribute(images, target=target_idx, n_steps=args.ig_steps, internal_batch_size=None)
