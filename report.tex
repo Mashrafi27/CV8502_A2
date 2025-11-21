@@ -1,0 +1,181 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{siunitx}
+\usepackage{enumitem}
+
+\title{CV8502 Assignment 2 \\ Fairness \& Interpretability in Medical AI}
+\author{Mashrafi Mohammad Monon}
+\date{}
+
+\newcommand{\dpGap}{\mathrm{DP}}
+\newcommand{\eoGap}{\mathrm{EO}}
+\newcommand{\eodsGap}{\mathrm{EOds}}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+Clinical deployment of chest X-ray classifiers requires not only high discrimination, but also equitable performance across demographic groups and clinically meaningful explanations. In this assignment I study fairness and interpretability for effusion detection on the NIH ChestXray14 dataset using a DenseNet-121 backbone.
+
+I focus on a single binary pathology (Effusion) and use patient sex (F/M) as the protected attribute for subgroup analysis. First, I perform a data audit to quantify label prevalence and subgroup balance. I then train a baseline model and measure subgroup performance, fairness gaps (Demographic Parity, Equal Opportunity, Equalized Odds), and calibration. Next, I implement two post-hoc mitigation methods (reweighting and GroupDRO) and re-evaluate fairness. Finally, I analyze class activation map (CAM) explanations and their stability under mild perturbations. The goal is to understand where the model is unfair or brittle, and whether the chosen mitigations improve both fairness metrics and the quality of explanations.
+
+\section{Data Audit and Bias Mapping}
+I use the ChestXray14 split prepared in Assignment 1, restricted to the Effusion label (binary) and a sex column derived from the metadata. Table~\ref{tab:data_audit} summarizes effusion prevalence overall and by sex using Wilson 95\% confidence intervals. The total dataset size is 112{,}120 studies.
+
+Overall effusion prevalence is approximately 11.9\% (95\% CI 11.7--12.1\%), with very similar rates for female and male patients. This suggests minimal label imbalance across sex for the \emph{Effusion} task, although the absolute number of male studies is higher.
+
+As a simple quantitative proxy for label noise, I examine prediction uncertainty on the baseline test set. Around 6.8\% of studies fall into an ambiguous band (Effusion probability 0.4--0.6), with similar rates for F (7.1\%) and M (6.6\%). Overall error rate at the 0.5 threshold is 21.0\% (F: 20.6\%, M: 21.3\%), and high-confidence errors (probability $\geq 0.8$ but wrong) are also similar across sex (F: 9.2\%, M: 9.1\%). These proxies suggest comparable label/prediction uncertainty across groups, though the absolute error rate highlights expected label noise in a weakly labeled dataset.
+
+Potential sources of bias include: (1) label noise due to weak labels and limited radiologist adjudication; (2) view-position and acquisition differences (AP vs. PA, portable vs. standard); and (3) unobserved confounders such as comorbidities or ICU status. Clinically, one might suspect different disease prevalence or case-mix by sex (e.g., differences in heart failure rates), and technically, different positioning or body habitus could change appearances of pleural effusion. These motivate checking subgroup performance and calibration even when raw prevalence is similar.
+
+\begin{table}[h]
+  \centering
+  \caption{Data audit for Effusion on ChestXray14 (all splits combined). Prevalence and 95\% Wilson confidence intervals.}
+  \label{tab:data_audit}
+  \begin{tabular}{lccc}
+    \toprule
+    Group & Count & Prevalence & 95\% CI \\
+    \midrule
+    Overall & 112{,}120 & 0.119 & [0.117, 0.121] \\
+    Sex = F & 48{,}780 & 0.121 & [0.118, 0.124] \\
+    Sex = M & 63{,}340 & 0.117 & [0.115, 0.120] \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Methods}
+\subsection{Model}
+For all experiments I use a DenseNet-121 classifier with ImageNet initialization, resized inputs of $224\times224$, and a single linear output for the Effusion logit. I train with \texttt{BCEWithLogitsLoss} and class-wise \texttt{pos\_weight}, AdamW optimizer with learning rate $10^{-4}$ and weight decay $10^{-4}$, cosine learning rate schedule, batch size 16, and 10 epochs. Data augmentation follows the A1 starter (random resized crops, flips, mild blur, brightness/contrast jitter); validation and test use center crops only.
+
+Train/validation/test splits are taken from the prepared CSV (\texttt{split=train/val/test}). Unless otherwise stated, I report test-set metrics.
+
+\subsection{Fairness Metrics}
+For each group I compute AUROC, AUPRC, TPR at 95\% specificity, Brier score, and PPV at a fixed 0.5 threshold. Fairness gaps are defined as:
+\begin{itemize}[leftmargin=*]
+  \item Demographic Parity ($\dpGap$): maximum difference in positive prediction rate across groups.
+  \item Equal Opportunity ($\eoGap$): maximum difference in true positive rate among positives.
+  \item Equalized Odds ($\eodsGap$): maximum of TPR and FPR gaps across groups.
+\end{itemize}
+Gaps are reported as absolute differences in probabilities (e.g., $\eoGap = 0.014$ means a 1.4 percentage point TPR gap).
+
+\subsection{Mitigations}
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Reweight}: inverse-frequency sampling over the sex column so that under-represented groups are seen more often during training.
+  \item \textbf{GroupDRO}: worst-group risk minimization, where the training objective emphasizes the group with the highest loss in each batch.
+\end{itemize}
+Both mitigations are run for the same number of epochs and hyperparameters as the baseline.
+
+\subsection{Explainability}
+To make individual predictions more interpretable, I compute gradient-based class activation maps (CAMs) for the Effusion logit. These maps backpropagate gradients from the Effusion score into the final DenseNet feature maps, aggregate channel-wise importance, and upsample the result to image resolution so that it can be overlaid on the chest X-ray. Warm colors indicate regions that most strongly increase the Effusion score, while cool colors have little influence.
+
+For each of the three models (baseline, reweight, GroupDRO) I select a fixed set of test radiographs and generate CAM overlays. Using the same studies across models allows visual differences in saliency to be attributed to the mitigation method rather than case selection. Due to environment constraints I focus on Grad-CAM--style maps and do not include additional attribution methods such as Integrated Gradients.
+
+To probe stability, I also evaluate the baseline model under mild perturbations (Gaussian noise and brightness/contrast $\pm 10\%$) and qualitatively compare CAMs for representative cases.
+
+\section{Results}
+\subsection{Baseline Performance and Fairness}
+Table~\ref{tab:baseline_fairness} summarizes test-set macro metrics and subgroup performance for the baseline Effusion model.
+\begin{table}[h]
+  \centering
+  \caption{Baseline metrics on the test set for Effusion.}
+  \label{tab:baseline_fairness}
+  \begin{tabular}{lcccc}
+    \toprule
+    Group & AUROC & AUPRC & TPR@95\%Spec & Brier \\
+    \midrule
+    Overall & 0.883 & 0.524 & 0.478 & -- \\
+    Sex = F & 0.884 & 0.525 & 0.464 & 0.147 \\
+    Sex = M & 0.882 & 0.525 & 0.486 & 0.149 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Using \texttt{fairness\_sex/fairness\_summary.json}, the baseline fairness gaps are:
+\[
+  \dpGap = 0.0002,\quad
+  \eoGap = 0.0140,\quad
+  \eodsGap = 0.0140.
+\]
+Demographic parity is essentially satisfied across sex (prediction rates differ by $<0.02$ percentage points). Equal opportunity and equalized odds gaps are small but non-zero, with slightly lower TPR for females at the fixed 0.5 threshold and the 95\% specificity operating point.
+
+\subsection{Mitigation Comparison}
+Table~\ref{tab:mitigation} compares macro test metrics and fairness gaps for the baseline, reweighting, and GroupDRO models.
+
+\begin{table}[h]
+  \centering
+  \caption{Macro test metrics and fairness gaps across methods.}
+  \label{tab:mitigation}
+  \begin{tabular}{lcccccc}
+    \toprule
+    Method & AUROC & AUPRC & F1@0.5 & TPR@95\%Spec & $\dpGap$ & $\eodsGap$ \\
+    \midrule
+    Baseline & 0.883 & 0.524 & 0.483 & 0.478 & 0.0002 & 0.0140 \\
+    Reweight & 0.879 & 0.518 & 0.474 & 0.466 & 0.0014 & 0.0060 \\
+    GroupDRO & 0.882 & 0.521 & 0.451 & 0.468 & 0.0001 & 0.0056 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Reweighting slightly reduces AUROC/AUPRC and F1, as expected when emphasizing the minority group, but substantially improves equalized odds (EOds from 0.0140 to 0.0060). GroupDRO achieves similar AUROC/AUPRC to the baseline, with a more noticeable drop in F1 (due to conservative thresholding) but the smallest DP and EOds gaps. In short, both mitigations trade a small amount of global accuracy for improved group fairness, with GroupDRO giving the lowest worst-case gap.
+
+\subsection{Calibration and Thresholds}
+Using \texttt{main.py calibrate}, the baseline expected calibration error (ECE) decreases from 0.0884 to 0.0473 after temperature scaling with $T\approx 1.49$, while AUROC and AUPRC remain unchanged. Reliability diagrams (not shown) confirm that overconfidence at high predicted probabilities is reduced.
+
+Thresholds for 95\% specificity differ only slightly between F and M, and between methods (e.g., baseline thresholds $\approx 0.90$ for both groups). This suggests that a single global threshold is not strongly unfair for sex in this dataset, although group-specific operating points could still be used in a deployment setting.
+
+\subsection{Perturbation Stability}
+To probe robustness of predictions and explanations, I evaluate the baseline model on test images with mild Gaussian noise and brightness/contrast perturbations of $\pm 10\%$. Clean performance (macro AUROC 0.883, AUPRC 0.524, F1 0.483, TPR@95\%Spec 0.478) drops substantially under these perturbations: AUROC 0.618, AUPRC 0.181, F1 0.009, TPR@95\%Spec 0.107.
+
+This indicates that even modest distribution shifts can significantly degrade operating-point sensitivity, which is relevant for real-world deployment where acquisition protocols and noise characteristics vary. In the report discussion, these results can be connected to the visual stability of Grad-CAM maps under the same perturbations.
+
+\subsection{Task D \& E -- Explainability and Interplay with Fairness}
+To make the classifier's decisions more interpretable, I compute gradient-based class activation maps (CAMs) for the Effusion logit. Intuitively, these maps highlight image regions where small increases in pixel intensity would most increase the model's confidence in the positive class. Warm colors (red/yellow) indicate regions that strongly support the effusion prediction, while cool colors (blue) indicate less influential areas.
+
+For each of the three models (baseline, reweight, GroupDRO), I selected a fixed set of 16 test radiographs and produced CAM overlays. Figure~\ref{fig:case1} shows an example high-confidence positive case. All three models focus their attention on the lower right hemithorax and costophrenic angle, which is consistent with a right-sided effusion and therefore clinically plausible. The mitigated models (especially GroupDRO) produce slightly more compact and lung-confined hotspots, whereas the baseline CAM also spills into mediastinal structures.
+
+In a second case study (Figure~\ref{fig:case2}), the baseline model assigns moderate effusion probability to a study without clear radiographic effusion. Its CAM partially highlights the cardiac silhouette and upper mediastinum rather than the pleural recesses, suggesting a spurious association with central brightness. Reweighting reduces the overall confidence and shifts attention slightly towards the lung bases, while GroupDRO further down-weights this case and produces a more diffuse, lower-intensity CAM. This example illustrates that fairness-oriented training can also change where the model ``looks'', potentially reducing reliance on shortcut features.
+
+Under mild noise and brightness/contrast perturbations, CAMs remain qualitatively similar in many high-confidence positive cases, but become more unstable for borderline examples: hotspots sometimes shift from lung fields to ribs or soft tissue without large changes in predicted probability. Combined with the strong drop in TPR@95\% specificity under perturbations, this underlines the need to interpret saliency maps with caution and to pair them with robustness checks.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.3\textwidth]{outputs/outputs/explain_baseline_before/exp_test_0000.png}
+  \includegraphics[width=0.3\textwidth]{outputs/outputs/explain_reweight/exp_test_0000.png}
+  \includegraphics[width=0.3\textwidth]{outputs/outputs/explain_groupdro/exp_test_0000.png}
+  \caption{Class activation maps for a high-confidence Effusion case (left to right: baseline, reweight, GroupDRO). All models highlight the right hemithorax; mitigations produce more compact, lung-focused saliency.}
+  \label{fig:case1}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.3\textwidth]{outputs/outputs/explain_baseline_before/exp_test_0003.png}
+  \includegraphics[width=0.3\textwidth]{outputs/outputs/explain_reweight/exp_test_0003.png}
+  \includegraphics[width=0.3\textwidth]{outputs/outputs/explain_groupdro/exp_test_0003.png}
+  \caption{Borderline case where the baseline CAM focuses on mediastinal structures; mitigated models lower the predicted probability and shift attention towards the lung bases.}
+  \label{fig:case2}
+\end{figure}
+
+\section{Discussion}
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Fairness findings}: For Effusion, raw prevalence differences across sex are small and the baseline model already exhibits modest fairness gaps. Nevertheless, both reweighting and GroupDRO further reduce EO/EOds gaps at the cost of slight degradation in global metrics.
+  \item \textbf{Trade-offs}: Reweighting yields a smoother trade-off (small drops in AUROC/AUPRC/F1) with a large gain in EOds, while GroupDRO aggressively optimizes worst-group loss, leading to the lowest gaps but more pronounced F1 reduction.
+  \item \textbf{Explainability interplay}: The mitigated models preserve the general structure of Grad-CAM maps while altering confidence. A more thorough case-study analysis could test whether mitigations reduce clear off-target attributions.
+  \item \textbf{Limitations}: Single protected attribute (sex) and single pathology; label noise and unobserved confounders; no subgroup-specific calibration; robustness only probed with simple synthetic perturbations; no formal human evaluation of explanations.
+\end{itemize}
+
+\section{Conclusion}
+Using a DenseNet-121 effusion detector on ChestXray14, I showed that simple subgroup-aware interventions---inverse-frequency reweighting and GroupDRO---can meaningfully reduce fairness gaps across sex with only modest losses in global performance. Calibration can be substantially improved via temperature scaling without hurting AUROC/AUPRC, but the model remains brittle to mild perturbations, underscoring the need for robustness-aware training. Grad-CAM explanations provide a useful qualitative lens on the effect of mitigation, but more principled sanity tests and human-in-the-loop assessment are required before clinical deployment.
+
+\section*{Contribution Note}
+Individual assignment: all experiments, analysis, and writing were carried out by the author.
+
+\begin{thebibliography}{9}
+\bibitem{wang2017}
+Wang, Xiaosong et al. ChestX-Ray8: Hospital-Scale Chest X-Ray Database and Benchmarks on Weakly-Supervised Classification and Localization of Common Thorax Diseases. CVPR 2017.
+\end{thebibliography}
+
+\end{document}
