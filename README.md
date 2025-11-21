@@ -106,6 +106,5 @@ python scripts/perturb_eval.py \
 - Contribution note; (bonus) eval CLI.
 
 ## HPC note
-- Bare repo: `/home/mashrafi.monon/repos/cv8502_a2.git`
-- Working copy: `/l/users/mashrafi.monon/cv8502_a2_workdir`
+- Keep a lightweight working copy (e.g., on a GPU node or shared filesystem) and, if needed, a separate bare repo for syncing across machines.
 - Point `--csv/--img-root` to your dataset location to avoid duplicates.
