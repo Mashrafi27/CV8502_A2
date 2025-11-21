@@ -1,38 +1,52 @@
 # CV8502 A2 — Fairness & Interpretability
 
-Standalone starter for Assignment 2. Baseline: DenseNet-121 (binary classification), with fairness metrics/gaps, two mitigation options, and explainability (Grad-CAM + Integrated Gradients).
+Reference implementation for CV8502 Assignment 2 (Fairness & Interpretability in Medical AI). The repository provides:
 
-## Setup
+- A DenseNet-121 baseline for binary medical image classification.
+- Subgroup fairness evaluation (DP, EO, EOds) with calibration and threshold analysis.
+- Two mitigation strategies (group reweighting and GroupDRO).
+- Post-hoc explainability via Grad-CAM and Integrated Gradients, including basic sanity and stability checks.
+
+## Environment
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+conda create -n cv8502_a2 python=3.9 -y
+conda activate cv8502_a2
 pip install -r requirements.txt
 ```
-Point `--csv` and `--img-root` to wherever your data already lives on HPC. You don’t need to copy it into this repo. (If you prefer short paths, you can create symlinks under `data/`.)
 
-## Typical workflow
-Choose one binary label (e.g., `Effusion`) and one demographic column (e.g., `sex`) for subgroup/fairness analysis.
+Point `--csv` and `--img-root` to wherever your dataset lives (e.g., NIH ChestXray14). You do not need to copy images into this repo; relative paths in the CSV are supported.
+
+## Usage
+
+The core entry point is `main.py`, which exposes subcommands for training, evaluation, stress testing, calibration, selective prediction, and explanations.
+
+### Example: baseline training and evaluation
 
 ```bash
-# 0) Activate env
-source .venv/bin/activate
+conda activate cv8502_a2
 
-# 1) Train baseline
+# Train baseline DenseNet-121 on Effusion with a group column `sex`
 python main.py train \
   --csv /path/to/your.csv --img-root /path/to/images_root \
   --labels Effusion \
+  --group-col sex \
   --epochs 10 --batch-size 16 --lr 1e-4 --seed 1337 \
   --outdir outputs/baseline
 
-# 2) Evaluate + export predictions (creates preds_test.csv)
+# Evaluate on test split and export predictions
 python main.py eval \
   --csv /path/to/your.csv --img-root /path/to/images_root \
   --labels Effusion --split test \
   --group-col sex \
   --weights outputs/baseline/best.pt \
   --outdir outputs/baseline_eval
+```
 
-# 3) Fairness gaps (DP/EO/EOds) + per-group metrics
+### Fairness metrics and mitigation
+
+```bash
+# Fairness metrics and gaps (DP/EO/EOds) from predictions
 python scripts/fairness_report.py \
   --preds outputs/baseline_eval/preds_test.csv \
   --group-col sex \
@@ -42,7 +56,7 @@ python scripts/fairness_report.py \
   --split test \
   --outdir outputs/fairness_sex
 
-# 4) Mitigation method 1: inverse-frequency group sampler
+# Mitigation 1: inverse-frequency group sampler
 python main.py train \
   --csv /path/to/your.csv --img-root /path/to/images_root \
   --labels Effusion \
@@ -50,17 +64,19 @@ python main.py train \
   --epochs 10 --batch-size 16 --lr 1e-4 --seed 1337 \
   --outdir outputs/mitigation_reweight
 
-# 5) Mitigation method 2: GroupDRO (worst-group loss per batch)
+# Mitigation 2: GroupDRO (worst-group loss per batch)
 python main.py train \
   --csv /path/to/your.csv --img-root /path/to/images_root \
   --labels Effusion \
   --group-col sex --group-dro \
   --epochs 10 --batch-size 16 --lr 1e-4 --seed 1337 \
   --outdir outputs/mitigation_groupdro
+```
 
-# 6) Repeat eval + fairness_report for each mitigation run (update weights/outdir)
+### Explainability, calibration, and robustness
 
-# 7) Explainability: Grad-CAM + Integrated Gradients overlays
+```bash
+# Explanations: Grad-CAM + Integrated Gradients overlays
 python main.py explain \
   --csv /path/to/your.csv --img-root /path/to/images_root \
   --labels Effusion --split test \
@@ -69,9 +85,7 @@ python main.py explain \
   --target-label Effusion --samples 16 \
   --outdir outputs/explain_baseline
 
-# 8) Repeat explainability after mitigation for comparison/case studies
-
-# 9) Calibration (optional but recommended)
+# Calibration (temperature scaling + reliability diagrams)
 python main.py calibrate \
   --csv /path/to/your.csv --img-root /path/to/images_root \
   --labels Effusion \
@@ -79,7 +93,7 @@ python main.py calibrate \
   --weights outputs/baseline/best.pt \
   --outdir outputs/calibration_baseline
 
-# 10) Mild perturbation stability (optional)
+# Mild perturbation stability (noise + brightness/contrast)
 python scripts/perturb_eval.py \
   --csv /path/to/your.csv --img-root /path/to/images_root \
   --labels Effusion \
@@ -89,22 +103,20 @@ python scripts/perturb_eval.py \
 ```
 
 ## Outputs
-- `preds_<split>.csv`: image_path, split, label columns, `prob_<label>`, and group column (for fairness_report).
-- `group_metrics_<split>.json`: per-group macro metrics (AUROC/AUPRC/F1/Sens@95%Spec).
-- `fairness_summary.json` + `per_group_metrics.csv`: DP/EO/EOds gaps and subgroup metrics.
-- `exp_<split>_####.png` + `explain_summary.csv`: Grad-CAM and IG overlays.
-- `calibration_*/reliability_*.png` and metrics from `main.py calibrate`.
-- `perturb_*/clean_metrics.json` and `perturbed_metrics.json` from mild perturbation check.
+
+- `preds_<split>.csv`: image path, split, label columns, `prob_<label>`, and group column.
+- `group_metrics_<split>.json`: per-group macro metrics (AUROC, AUPRC, F1, TPR@95%Spec).
+- `fairness_summary.json` + `per_group_metrics.csv`: fairness gaps (DP, EO, EOds) and subgroup metrics.
+- `exp_<split>_####.png` + `explain_summary.csv`: Grad-CAM and IG overlays for selected cases.
+- `calibration_*/reliability_*.png` and `calibration_summary.json`: calibration metrics and reliability diagrams.
+- `perturb_*/clean_metrics.json` and `perturb_*/perturbed_metrics.json`: robustness of the baseline under mild perturbations.
 
 ## Mitigation flags
-- `--reweight-by-group`: inverse-frequency group sampler.
-- `--group-dro`: worst-group loss per batch (requires `--group-col`).
 
-## Deliverables checklist
-- Report (8 pages): data audit + CIs, subgroup metrics, DP/EO/EOds gaps, mitigation effects, calibration/thresholds, Grad-CAM + attribution before/after mitigation, two case studies.
-- Code/notebooks + one-command repro.
-- Contribution note; (bonus) eval CLI.
+- `--reweight-by-group`: inverse-frequency group sampler over the specified group column.
+- `--group-dro`: worst-group loss per batch (GroupDRO), requires `--group-col`.
 
-## HPC note
+## Notes
+
 - Keep a lightweight working copy (e.g., on a GPU node or shared filesystem) and, if needed, a separate bare repo for syncing across machines.
-- Point `--csv/--img-root` to your dataset location to avoid duplicates.
+- Ensure that `outputs/` remains untracked to avoid committing large artifacts.
