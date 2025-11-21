@@ -651,7 +651,10 @@ def _tensor_to_uint8(img_t: torch.Tensor) -> np.ndarray:
     return (img * 255).astype(np.uint8)
 
 def _overlay_heatmap(img: np.ndarray, heatmap: np.ndarray, alpha: float = 0.5) -> np.ndarray:
-    heat = np.uint8(255 * heatmap)
+    if heatmap.ndim == 3:
+        # collapse channel dimension if present
+        heatmap = heatmap.mean(axis=2)
+    heat = np.uint8(255 * np.clip(heatmap, 0, 1))
     heat_color = cv2.applyColorMap(heat, cv2.COLORMAP_JET)
     heat_color = cv2.cvtColor(heat_color, cv2.COLOR_BGR2RGB)
     return np.clip(alpha * img + (1 - alpha) * heat_color, 0, 255).astype(np.uint8)
